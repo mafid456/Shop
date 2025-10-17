@@ -17,8 +17,14 @@ pipeline {
       steps {
         sh ''' 
           echo "=== Installing required dependencies ==="
+          
+          echo "Updating apt repositories..."
+          sudo apt-get update -y
+          
+          echo "Installing unzip, curl, docker..."
+          sudo apt-get install -y unzip curl docker.io
+
           echo "Installing AWS CLI v2..."
-          sudo apt install unzip
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
           unzip -o awscliv2.zip
           sudo ./aws/install || true
@@ -34,9 +40,8 @@ pipeline {
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
           kubectl version --client
 
-          echo "Installing Docker..."
-          sudo apt-get install -y docker.io
-          sudo usermod -aG docker Jenkins
+          echo "Adding Jenkins user to docker group..."
+          sudo usermod -aG docker jenkins || true
         '''
       }
     }
@@ -71,7 +76,7 @@ EOF
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
           sh '''
             echo "=== Creating ECR Repository ${REPO_NAME} ==="
-            aws ecr create-repository --repository-name ${REPO_NAME} --region ${AWS_REGION}
+            aws ecr create-repository --repository-name ${REPO_NAME} --region ${AWS_REGION} || true
           '''
         }
       }
@@ -85,7 +90,7 @@ EOF
             ECR_REPO=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}
 
             echo "=== Logging in to ECR ==="
-            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com
+            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $ECR_REPO
 
             echo "=== Building and pushing Docker image ==="
             docker build -t ${REPO_NAME}:${IMAGE_TAG} .
@@ -112,7 +117,7 @@ EOF
               --nodes-min 1 \
               --nodes-max 3 \
               --managed \
-              --with-oidc
+              --with-oidc || true
           '''
         }
       }
