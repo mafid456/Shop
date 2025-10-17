@@ -7,7 +7,7 @@ pipeline {
     NODE_TYPE      = 't3.medium'
     NODE_COUNT     = '2'
     REPO_NAME      = 'Ecom-app-Repo'
-    IMAGE_TAG      = 'V1'
+    IMAGE_TAG      = 'v1'
     AWS_CREDS      = 'AWS'
   }
 
