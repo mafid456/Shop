@@ -131,10 +131,10 @@ EOF
             # Use bash to source the file
             bash -c "source ecr_repo.env && \
             echo 'Deploying application...' && \
-            kubectl set image -f deployment.yaml Ecom-container=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml && \
+            kubectl set image -f deployment.yaml ecom-container=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml && \
             kubectl apply -f temp-deployment.yaml && \
             kubectl apply -f service.yaml && \
-            kubectl rollout status deployment/Ecom-container"
+            kubectl rollout status deployment/ecom-container"
           '''
         }
       }
