@@ -13,7 +13,7 @@ spec:
         app: Ecom-app
     spec:
       containers:
-      - name: Ecom-container
+      - name: ecom-container
         image: 
         ports:
         - containerPort: 8083
