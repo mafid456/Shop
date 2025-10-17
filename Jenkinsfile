@@ -6,7 +6,7 @@ pipeline {
     CLUSTER_NAME   = 'jenkins-eks-Cluster'
     NODE_TYPE      = 't3.medium'
     NODE_COUNT     = '2'
-    REPO_NAME      = 'ecom-app-repo'  // must be lowercase
+    REPO_NAME      = 'ecom-app-repo'
     IMAGE_TAG      = 'v1'
     AWS_CREDS      = 'AWS'
   }
@@ -94,21 +94,28 @@ EOF
       }
     }
 
-    stage('Create EKS Cluster') {
+    stage('Create or Use Existing EKS Cluster') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
           sh '''
-            echo "=== Creating EKS Cluster ${CLUSTER_NAME} ==="
-            eksctl create cluster \
-              --name ${CLUSTER_NAME} \
-              --region ${AWS_REGION} \
-              --nodegroup-name standard-workers \
-              --node-type ${NODE_TYPE} \
-              --nodes ${NODE_COUNT} \
-              --nodes-min 1 \
-              --nodes-max 3 \
-              --managed \
-              --with-oidc
+            echo "=== Checking if EKS Cluster ${CLUSTER_NAME} exists ==="
+            CLUSTER_EXISTS=$(aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query "cluster.status" --output text 2>/dev/null || echo "NOTFOUND")
+
+            if [ "$CLUSTER_EXISTS" = "NOTFOUND" ]; then
+              echo "Cluster not found. Creating EKS Cluster ${CLUSTER_NAME}..."
+              eksctl create cluster \
+                --name ${CLUSTER_NAME} \
+                --region ${AWS_REGION} \
+                --nodegroup-name standard-workers \
+                --node-type ${NODE_TYPE} \
+                --nodes ${NODE_COUNT} \
+                --nodes-min 1 \
+                --nodes-max 3 \
+                --managed \
+                --with-oidc
+            else
+              echo "Cluster ${CLUSTER_NAME} already exists. Using existing cluster."
+            fi
           '''
         }
       }
@@ -118,22 +125,21 @@ EOF
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
           sh '''
-            #!/bin/bash
             echo "=== Configuring kubectl ==="
             aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 
-            # Use Bash to source env
-            source ecr_repo.env
-
-            echo "=== Deploying application to EKS ==="
-            kubectl set image -f deployment.yaml my-app=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml
-            kubectl apply -f temp-deployment.yaml
-            kubectl apply -f service.yaml
-            kubectl rollout status deployment/my-app
+            # Use bash to source the file
+            bash -c "source ecr_repo.env && \
+            echo 'Deploying application...' && \
+            kubectl set image -f deployment.yaml my-app=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml && \
+            kubectl apply -f temp-deployment.yaml && \
+            kubectl apply -f service.yaml && \
+            kubectl rollout status deployment/my-app"
           '''
         }
       }
     }
+
   }
 
   post {
