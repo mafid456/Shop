@@ -76,7 +76,8 @@ EOF
     stage('Build and Push Docker Image') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
-          sh '''
+          sh '''#!/bin/bash
+            set -e
             ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
             ECR_REPO=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}
 
@@ -90,8 +91,6 @@ EOF
 
             echo "ECR_REPO=$ECR_REPO" > ecr_repo.env
           '''
-          // Save file for next stage
-          stash includes: 'ecr_repo.env', name: 'ecr_env_file'
         }
       }
     }
@@ -99,7 +98,8 @@ EOF
     stage('Create or Use Existing EKS Cluster') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
-          sh '''
+          sh '''#!/bin/bash
+            set -e
             echo "=== Checking if EKS Cluster ${CLUSTER_NAME} exists ==="
             CLUSTER_EXISTS=$(aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query "cluster.status" --output text 2>/dev/null || echo "NOTFOUND")
 
@@ -126,8 +126,8 @@ EOF
     stage('Deploy to EKS') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
-          unstash 'ecr_env_file'
-          sh '''
+          sh '''#!/bin/bash
+            set -e
             echo "=== Configuring kubectl ==="
             aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 
@@ -154,7 +154,6 @@ EOF
         }
       }
     }
-
   }
 
   post {
