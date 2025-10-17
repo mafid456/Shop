@@ -7,6 +7,6 @@ spec:
     app: ecom-app
   type: NodePort
   ports:
-    - port: 8083
-      targetPort: 8083
+    - port: 80
+      targetPort: 80
       nodePort: 30080
