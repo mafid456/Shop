@@ -81,4 +81,69 @@ EOF
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
           sh '''
-            ACCOUNT_ID=$(aws sts get-caller-identity --query "_
+            ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+            ECR_REPO=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}
+
+            echo "=== Logging in to ECR ==="
+            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+            echo "=== Building and pushing Docker image ==="
+            docker build -t ${REPO_NAME}:${IMAGE_TAG} .
+            docker tag ${REPO_NAME}:${IMAGE_TAG} $ECR_REPO:${IMAGE_TAG}
+            docker push $ECR_REPO:${IMAGE_TAG}
+
+            echo "ECR_REPO=$ECR_REPO" > ecr_repo.env
+          '''
+        }
+      }
+    }
+
+    stage('Create EKS Cluster') {
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+          sh '''
+            echo "=== Creating EKS Cluster ${CLUSTER_NAME} ==="
+            eksctl create cluster \
+              --name ${CLUSTER_NAME} \
+              --region ${AWS_REGION} \
+              --nodegroup-name standard-workers \
+              --node-type ${NODE_TYPE} \
+              --nodes ${NODE_COUNT} \
+              --nodes-min 1 \
+              --nodes-max 3 \
+              --managed \
+              --with-oidc || true
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to EKS') {
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+          sh '''
+            echo "=== Configuring kubectl ==="
+            aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
+
+            source ecr_repo.env
+
+            echo "=== Deploying application to EKS ==="
+            kubectl set image -f deployment.yaml my-app=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml
+            kubectl apply -f temp-deployment.yaml
+            kubectl apply -f service.yaml
+            kubectl rollout status deployment/my-app
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Application successfully built, pushed, and deployed to EKS!"
+    }
+    failure {
+      echo "❌ Deployment failed. Please check the Jenkins logs."
+    }
+  }
+}
