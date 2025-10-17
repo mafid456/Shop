@@ -15,10 +15,10 @@ pipeline {
 
     stage('Install Dependencies') {
       steps {
-        sh '''
-          apt install unzip 
+        sh ''' 
           echo "=== Installing required dependencies ==="
           echo "Installing AWS CLI v2..."
+          sudo apt install unzip
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
           unzip -o awscliv2.zip
           sudo ./aws/install || true
