@@ -6,7 +6,7 @@ pipeline {
     CLUSTER_NAME   = 'jenkins-eks-Cluster'
     NODE_TYPE      = 't3.medium'
     NODE_COUNT     = '2'
-    REPO_NAME      = 'ecom-app-repo'
+    REPO_NAME      = 'ecom-app-repo'  // must be lowercase
     IMAGE_TAG      = 'v1'
     AWS_CREDS      = 'AWS'
   }
@@ -33,7 +33,6 @@ pipeline {
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
           kubectl version --client
-          sudo usermod -aG docker jenkins
         '''
       }
     }
@@ -82,7 +81,7 @@ EOF
             ECR_REPO=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}
 
             echo "=== Logging in to ECR ==="
-            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com
+            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $ECR_REPO
 
             echo "=== Building and pushing Docker image ==="
             docker build -t ${REPO_NAME}:${IMAGE_TAG} .
@@ -119,9 +118,11 @@ EOF
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
           sh '''
+            #!/bin/bash
             echo "=== Configuring kubectl ==="
             aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 
+            # Use Bash to source env
             source ecr_repo.env
 
             echo "=== Deploying application to EKS ==="
