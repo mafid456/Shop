@@ -17,7 +17,6 @@ pipeline {
       steps {
         sh '''
           echo "=== Installing required dependencies ==="
-          sudo apt-get update -y
 
           echo "Installing AWS CLI v2..."
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
