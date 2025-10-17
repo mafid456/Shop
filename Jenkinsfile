@@ -6,7 +6,7 @@ pipeline {
     CLUSTER_NAME   = 'jenkins-eks-Cluster'
     NODE_TYPE      = 't3.medium'
     NODE_COUNT     = '2'
-    REPO_NAME      = 'aEcom-app-Repo'
+    REPO_NAME      = 'ecom-app-Repo'
     IMAGE_TAG      = 'v1'
     AWS_CREDS      = 'AWS'
   }
