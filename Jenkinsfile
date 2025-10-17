@@ -116,4 +116,30 @@ EOF
 
     stage('Deploy to EKS') {
       steps {
-        w
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+          sh '''
+            echo "=== Configuring kubectl ==="
+            aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
+
+            source ecr_repo.env
+
+            echo "=== Deploying application to EKS ==="
+            kubectl set image -f deployment.yaml my-app=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml
+            kubectl apply -f temp-deployment.yaml
+            kubectl apply -f service.yaml
+            kubectl rollout status deployment/my-app
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Application successfully built, pushed, and deployed to EKS!"
+    }
+    failure {
+      echo "❌ Deployment failed. Please check the Jenkins logs."
+    }
+  }
+}
