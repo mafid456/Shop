@@ -134,7 +134,7 @@ EOF
             kubectl set image -f deployment.yaml ecom-container=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml && \
             kubectl apply -f temp-deployment.yaml && \
             kubectl apply -f service.yaml && \
-            kubectl rollout status deployment/ecom-container"
+            kubectl rollout status deployment/ecom-deploy"
           '''
         }
       }
