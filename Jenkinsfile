@@ -90,6 +90,8 @@ EOF
 
             echo "ECR_REPO=$ECR_REPO" > ecr_repo.env
           '''
+          // Save file for next stage
+          stash includes: 'ecr_repo.env', name: 'ecr_env_file'
         }
       }
     }
@@ -124,18 +126,27 @@ EOF
     stage('Deploy to EKS') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+          unstash 'ecr_env_file'
           sh '''
             echo "=== Configuring kubectl ==="
             aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 
-            # Load ECR repo info
-            . ecr_repo.env
+            echo "=== Loading ECR repo info ==="
+            source ecr_repo.env
 
-            echo "=== Deploying application..."
-            kubectl set image deployment/ecom-deploy ecom-container=${ECR_REPO}:${IMAGE_TAG} --record
+            echo "=== Deploying application ==="
+            if kubectl get deployment ecom-deploy >/dev/null 2>&1; then
+              echo "Updating existing deployment..."
+              kubectl set image deployment/ecom-deploy ecom-container=${ECR_REPO}:${IMAGE_TAG} --record
+            else
+              echo "Creating new deployment..."
+              kubectl apply -f deployment.yaml
+            fi
+
+            echo "=== Waiting for rollout to complete ==="
             kubectl rollout status deployment/ecom-deploy --timeout=300s
 
-            echo "=== Applying Service..."
+            echo "=== Applying Service ==="
             kubectl apply -f service.yaml
 
             echo "✅ Deployment complete!"
