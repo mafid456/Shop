@@ -6,11 +6,11 @@ spec:
   replicas: 2
   selector:
     matchLabels:
-      app: Ecom-app
+      app: ecom-app
   template:
     metadata:
       labels:
-        app: Ecom-app
+        app: ecom-app
     spec:
       containers:
       - name: ecom-container
