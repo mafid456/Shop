@@ -128,13 +128,17 @@ EOF
             echo "=== Configuring kubectl ==="
             aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 
-            # Use bash to source the file
-            bash -c "source ecr_repo.env && \
-            echo 'Deploying application...' && \
-            kubectl set image -f deployment.yaml ecom-container=${ECR_REPO}:${IMAGE_TAG} --local -o yaml > temp-deployment.yaml && \
-            kubectl apply -f temp-deployment.yaml && \
-            kubectl apply -f service.yaml && \
-            kubectl rollout status deployment/ecom-deploy"
+            # Load ECR repo info
+            . ecr_repo.env
+
+            echo "=== Deploying application..."
+            kubectl set image deployment/ecom-deploy ecom-container=${ECR_REPO}:${IMAGE_TAG} --record
+            kubectl rollout status deployment/ecom-deploy --timeout=300s
+
+            echo "=== Applying Service..."
+            kubectl apply -f service.yaml
+
+            echo "✅ Deployment complete!"
           '''
         }
       }
