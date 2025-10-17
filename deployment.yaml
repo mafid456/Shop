@@ -14,6 +14,6 @@ spec:
     spec:
       containers:
       - name: ecom-container
-        image: 
+        image: 460928920964.dkr.ecr.ap-south-1.amazonaws.com/ecom-app-repo:v1
         ports:
         - containerPort: 8083
