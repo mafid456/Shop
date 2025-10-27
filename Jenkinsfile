@@ -18,6 +18,19 @@ pipeline {
         sh '''
           echo "=== Installing required dependencies ==="
 
+          # Detect OS and install unzip
+          if [ -f /etc/debian_version ]; then
+            echo "Detected Debian/Ubuntu system"
+            sudo apt-get update -y
+            sudo apt-get install -y unzip curl
+          elif [ -f /etc/redhat-release ]; then
+            echo "Detected RHEL/Amazon Linux system"
+            sudo yum install -y unzip curl
+          else
+            echo "Unknown OS, attempting generic install"
+            sudo apt-get install -y unzip curl || true
+          fi
+
           echo "Installing AWS CLI v2..."
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
           unzip -o awscliv2.zip
