@@ -2,15 +2,14 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION     = 'ap-south-1'
-    CLUSTER_NAME   = 'jenkins-eks-Cluster'
-    ECR_REPO       = '503427798981.dkr.ecr.ap-south-1.amazonaws.com/ecom'
-    IMAGE_TAG      = 'v1'
+    AWS_REGION = 'ap-south-1'
+    CLUSTER_NAME = 'jenkins-eks-Cluster'
+    ECR_REPO = '503427798981.dkr.ecr.ap-south-1.amazonaws.com/ecom-repo'
+    IMAGE_TAG = 'latest'
   }
 
   stages {
 
-    // --------------------------------------------------
     stage('Install Dependencies') {
       steps {
         sh '''
@@ -62,53 +61,56 @@ pipeline {
       }
     }
 
-    // --------------------------------------------------
     stage('Login to AWS ECR') {
       steps {
         sh '''
           echo "=== Logging in to AWS ECR ==="
-          aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
+          aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
         '''
       }
     }
 
-    // --------------------------------------------------
-    stage('Build and Push Docker Image') {
+    stage('Build & Push Docker Image') {
       steps {
-        sh '''
-          echo "=== Checking if image already exists ==="
-          IMAGE_EXISTS=$(aws ecr describe-images --repository-name ecom --image-ids imageTag=${IMAGE_TAG} --region ${AWS_REGION} --query 'imageDetails' --output text || true)
+        script {
+          def imageExists = sh(
+            script: "aws ecr describe-images --repository-name ecom-repo --image-ids imageTag=${IMAGE_TAG} --region ${AWS_REGION} >/dev/null 2>&1",
+            returnStatus: true
+          ) == 0
 
-          if [ "$IMAGE_EXISTS" != "None" ] && [ -n "$IMAGE_EXISTS" ]; then
-            echo "✅ Image already exists in ECR. Skipping build."
-          else
-            echo "=== Building Docker image ==="
-            sudo docker build -t ${ECR_REPO}:${IMAGE_TAG} .
-            echo "=== Pushing Docker image to ECR ==="
-            sudo docker push ${ECR_REPO}:${IMAGE_TAG}
-          fi
-        '''
+          if (imageExists) {
+            echo "🟡 Image '${IMAGE_TAG}' already exists in ECR. Skipping build."
+          } else {
+            sh '''
+              echo "=== Building and pushing Docker image ==="
+              docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+              docker push ${ECR_REPO}:${IMAGE_TAG}
+            '''
+          }
+        }
       }
     }
 
-    // --------------------------------------------------
     stage('Create or Use EKS Cluster') {
       steps {
-        sh '''
-          echo "=== Checking if EKS cluster already exists ==="
-          CLUSTER_STATUS=$(aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query 'cluster.status' --output text 2>/dev/null || true)
+        script {
+          def clusterExists = sh(
+            script: "aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} >/dev/null 2>&1",
+            returnStatus: true
+          ) == 0
 
-          if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
-            echo "✅ EKS cluster already exists. Skipping creation."
-          else
-            echo "=== Creating new EKS cluster (this may take several minutes) ==="
-            eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2
-          fi
-        '''
+          if (clusterExists) {
+            echo "🟡 Cluster '${CLUSTER_NAME}' already exists. Skipping creation."
+          } else {
+            sh '''
+              echo "=== Creating EKS Cluster ==="
+              eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --node-type t3.medium --managed
+            '''
+          }
+        }
       }
     }
 
-    // --------------------------------------------------
     stage('Deploy to EKS') {
       steps {
         sh '''
@@ -125,7 +127,12 @@ pipeline {
           fi
 
           echo "=== Waiting for rollout to complete ==="
-          kubectl rollout status deployment/ecom-deploy --timeout=300s || (kubectl describe deployment ecom-deploy && exit 1)
+          kubectl rollout status deployment/ecom-deploy --timeout=300s || {
+            echo "⚠️ Rollout failed or timed out. Showing pods for debugging:"
+            kubectl get pods -o wide
+            kubectl describe pods | tail -n 50
+            exit 1
+          }
 
           echo "=== Applying Service ==="
           kubectl apply -f service.yaml
@@ -137,11 +144,14 @@ pipeline {
   }
 
   post {
-    failure {
-      echo "❌ Pipeline failed. Please check the logs above."
+    always {
+      echo "Pipeline completed (success or fail)."
     }
     success {
-      echo "🎉 Pipeline executed successfully!"
+      echo "✅ Pipeline succeeded!"
+    }
+    failure {
+      echo "❌ Pipeline failed. Check the Jenkins logs for details."
     }
   }
 }
