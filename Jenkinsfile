@@ -39,7 +39,7 @@ pipeline {
 
     stage('Configure AWS Credentials') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 5eb734ee-37a7-487b-a46c-9008ebcf9157]]) {
           sh '''
             echo "=== Configuring AWS CLI ==="
             mkdir -p ~/.aws
@@ -64,7 +64,7 @@ EOF
 
     stage('Create ECR Repository') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 5eb734ee-37a7-487b-a46c-9008ebcf9157]]) {
           sh '''
             echo "=== Creating ECR Repository ${REPO_NAME} ==="
             aws ecr create-repository --repository-name ${REPO_NAME} --region ${AWS_REGION} || echo "Repository already exists"
@@ -75,7 +75,7 @@ EOF
 
     stage('Build and Push Docker Image') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 5eb734ee-37a7-487b-a46c-9008ebcf9157]]) {
           sh '''#!/bin/bash
             set -e
             ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
@@ -97,7 +97,7 @@ EOF
 
     stage('Create or Use Existing EKS Cluster') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 5eb734ee-37a7-487b-a46c-9008ebcf9157]]) {
           sh '''#!/bin/bash
             set -e
             echo "=== Checking if EKS Cluster ${CLUSTER_NAME} exists ==="
@@ -125,7 +125,7 @@ EOF
 
     stage('Deploy to EKS') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDS}"]]) {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 5eb734ee-37a7-487b-a46c-9008ebcf9157]]) {
           sh '''#!/bin/bash
             set -e
             echo "=== Configuring kubectl ==="
