@@ -2,129 +2,143 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION = "ap-south-1"
-    CLUSTER_NAME = "jenkins-eks-Cluster"
-    IMAGE_TAG = "latest"
-    REPO_NAME = "ecom-repo"
-    ECR_REPO = "503427798981.dkr.ecr.ap-south-1.amazonaws.com/${REPO_NAME}"
-    KUBECONFIG = "/var/lib/jenkins/.kube/config"
+    AWS_REGION     = 'ap-south-1'
+    CLUSTER_NAME   = 'jenkins-eks-Cluster'
+    ECR_REPO       = '503427798981.dkr.ecr.ap-south-1.amazonaws.com/ecom'
+    IMAGE_TAG      = 'v1'
   }
 
   stages {
 
+    // --------------------------------------------------
     stage('Install Dependencies') {
       steps {
         sh '''
           echo "=== Installing required dependencies ==="
+
           if [ -f /etc/debian_version ]; then
             echo "Detected Debian/Ubuntu system"
             sudo apt-get update -y
-            sudo apt-get install -y awscli docker.io kubectl
+            sudo apt-get install -y unzip curl apt-transport-https ca-certificates gnupg lsb-release
+
+            echo "Installing AWS CLI v2..."
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -o awscliv2.zip
+            sudo ./aws/install || true
+            aws --version || echo "AWS CLI installation failed"
+
+            echo "Installing Docker..."
+            sudo apt-get install -y docker.io
+            sudo systemctl enable docker || true
+            sudo systemctl start docker || true
+            sudo usermod -aG docker jenkins || true
+
+            echo "Installing kubectl..."
+            sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+            echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+            sudo apt-get update -y
+            sudo apt-get install -y kubectl
+
           elif [ -f /etc/redhat-release ]; then
             echo "Detected RHEL/CentOS system"
-            sudo yum install -y awscli docker kubectl
+            sudo yum install -y unzip curl docker
+            sudo systemctl enable docker || true
+            sudo systemctl start docker || true
+            sudo usermod -aG docker jenkins || true
+
+            echo "Installing AWS CLI v2..."
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -o awscliv2.zip
+            sudo ./aws/install || true
+            aws --version || echo "AWS CLI installation failed"
+
+            echo "Installing kubectl..."
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
           fi
-          sudo usermod -aG docker jenkins || true
-          sudo systemctl enable docker || true
-          sudo systemctl start docker || true
+
+          echo "✅ Dependency installation complete."
         '''
       }
     }
 
-    stage('Create EKS Cluster (if not exists)') {
-      steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''
-            echo "=== Checking EKS cluster ==="
-            if aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} >/dev/null 2>&1; then
-              echo "✅ EKS cluster '${CLUSTER_NAME}' already exists. Skipping creation."
-            else
-              echo "🚀 Creating EKS cluster '${CLUSTER_NAME}'..."
-              eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --managed
-              echo "✅ Cluster created successfully!"
-            fi
-          '''
-        }
-      }
-    }
-
-    stage('Login to ECR') {
-      steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''
-            echo "=== Logging in to ECR ==="
-            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin 503427798981.dkr.ecr.${AWS_REGION}.amazonaws.com
-          '''
-        }
-      }
-    }
-
-    stage('Build and Push Docker Image (if not exists)') {
+    // --------------------------------------------------
+    stage('Login to AWS ECR') {
       steps {
         sh '''
-          echo "=== Checking if image already exists in ECR ==="
-          IMAGE_EXISTS=$(aws ecr describe-images --repository-name ${REPO_NAME} --region ${AWS_REGION} --query "imageDetails[?imageTags[?contains(@, '${IMAGE_TAG}')]]" --output text || true)
-
-          if [ -n "$IMAGE_EXISTS" ]; then
-            echo "✅ Image ${ECR_REPO}:${IMAGE_TAG} already exists. Skipping build and push."
-          else
-            echo "=== Building Docker image ==="
-            docker build -t ${ECR_REPO}:${IMAGE_TAG} .
-            echo "=== Pushing image to ECR ==="
-            docker push ${ECR_REPO}:${IMAGE_TAG}
-            echo "✅ Image pushed successfully!"
-          fi
-
-          echo "ECR_REPO=${ECR_REPO}" > ecr_repo.env
-          echo "IMAGE_TAG=${IMAGE_TAG}" >> ecr_repo.env
+          echo "=== Logging in to AWS ECR ==="
+          aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
         '''
       }
     }
 
+    // --------------------------------------------------
+    stage('Build and Push Docker Image') {
+      steps {
+        sh '''
+          echo "=== Checking if image already exists ==="
+          IMAGE_EXISTS=$(aws ecr describe-images --repository-name ecom --image-ids imageTag=${IMAGE_TAG} --region ${AWS_REGION} --query 'imageDetails' --output text || true)
+
+          if [ "$IMAGE_EXISTS" != "None" ] && [ -n "$IMAGE_EXISTS" ]; then
+            echo "✅ Image already exists in ECR. Skipping build."
+          else
+            echo "=== Building Docker image ==="
+            sudo docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+            echo "=== Pushing Docker image to ECR ==="
+            sudo docker push ${ECR_REPO}:${IMAGE_TAG}
+          fi
+        '''
+      }
+    }
+
+    // --------------------------------------------------
+    stage('Create or Use EKS Cluster') {
+      steps {
+        sh '''
+          echo "=== Checking if EKS cluster already exists ==="
+          CLUSTER_STATUS=$(aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query 'cluster.status' --output text 2>/dev/null || true)
+
+          if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
+            echo "✅ EKS cluster already exists. Skipping creation."
+          else
+            echo "=== Creating new EKS cluster (this may take several minutes) ==="
+            eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2
+          fi
+        '''
+      }
+    }
+
+    // --------------------------------------------------
     stage('Deploy to EKS') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''#!/bin/bash
-            set -e
-            echo "=== Configuring kubectl ==="
-            export KUBECONFIG=${KUBECONFIG}
-            aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION} --kubeconfig $KUBECONFIG
+        sh '''
+          echo "=== Configuring kubectl ==="
+          aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 
-            echo "=== Verifying EKS Connection ==="
-            if ! kubectl get nodes >/dev/null 2>&1; then
-              echo "❌ Unable to connect to EKS cluster. Exiting."
-              exit 1
-            fi
-            echo "✅ EKS cluster connection verified."
+          echo "=== Deploying application ==="
+          if kubectl get deployment ecom-deploy >/dev/null 2>&1; then
+            echo "Updating existing deployment..."
+            kubectl set image deployment/ecom-deploy ecom-container=${ECR_REPO}:${IMAGE_TAG} --record
+          else
+            echo "Creating new deployment..."
+            kubectl apply -f deployment.yaml
+          fi
 
-            echo "=== Loading ECR repo info ==="
-            source ecr_repo.env
+          echo "=== Waiting for rollout to complete ==="
+          kubectl rollout status deployment/ecom-deploy --timeout=300s || (kubectl describe deployment ecom-deploy && exit 1)
 
-            echo "=== Deploying application ==="
-            if kubectl get deployment ecom-deploy >/dev/null 2>&1; then
-              echo "Updating existing deployment..."
-              kubectl set image deployment/ecom-deploy ecom-container=${ECR_REPO}:${IMAGE_TAG} --record
-            else
-              echo "Creating new deployment..."
-              kubectl apply -f deployment.yaml
-            fi
+          echo "=== Applying Service ==="
+          kubectl apply -f service.yaml
 
-            echo "=== Waiting for rollout to complete ==="
-            kubectl rollout status deployment/ecom-deploy --timeout=300s || echo "⚠️ Rollout may not be complete yet"
-
-            echo "=== Applying Service ==="
-            kubectl apply -f service.yaml
-
-            echo "✅ Deployment complete!"
-          '''
-        }
+          echo "✅ Deployment complete!"
+        '''
       }
     }
   }
 
   post {
     failure {
-      echo "❌ Pipeline failed. Check logs above for errors."
+      echo "❌ Pipeline failed. Please check the logs above."
     }
     success {
       echo "🎉 Pipeline executed successfully!"
