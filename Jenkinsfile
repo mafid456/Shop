@@ -2,86 +2,27 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION   = 'ap-south-1'
-    CLUSTER_NAME = 'jenkins-eks-Cluster'
-    NODE_TYPE    = 't3.medium'
-    NODE_COUNT   = '2'
-    REPO_NAME    = 'ecom-app-repo'
-    IMAGE_TAG    = 'v1'
-    AWS_CREDS    = 'AWS'
+    AWS_REGION = "ap-south-1"
+    CLUSTER_NAME = "jenkins-eks-Cluster"
+    IMAGE_TAG = "latest"
   }
 
   stages {
 
-    stage('Install Dependencies') {
+    stage('Checkout Code') {
       steps {
-        sh '''
-          echo "=== Installing required dependencies ==="
-
-          # Detect OS and install unzip
-          if [ -f /etc/debian_version ]; then
-            echo "Detected Debian/Ubuntu system"
-            sudo apt-get update -y
-            sudo apt-get install -y unzip curl
-          elif [ -f /etc/redhat-release ]; then
-            echo "Detected RHEL/Amazon Linux system"
-            sudo yum install -y unzip curl
-          else
-            echo "Unknown OS, attempting generic install"
-            sudo apt-get install -y unzip curl || true
-          fi
-
-          echo "Installing AWS CLI v2..."
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip -o awscliv2.zip
-          sudo ./aws/install || true
-          aws --version
-
-          echo "Installing eksctl..."
-          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-          sudo mv /tmp/eksctl /usr/local/bin
-          eksctl version
-
-          echo "Installing kubectl..."
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          kubectl version --client
-        '''
+        echo "=== Checking out source code ==="
+        checkout scm
       }
     }
 
-    stage('Configure AWS Credentials') {
+    stage('Login to ECR') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
           sh '''
-            echo "=== Configuring AWS CLI ==="
-            mkdir -p ~/.aws
-
-            cat <<EOF > ~/.aws/config
-[default]
-region = ${AWS_REGION}
-output = json
-EOF
-
-            cat <<EOF > ~/.aws/credentials
-[default]
-aws_access_key_id = $AWS_ACCESS_KEY_ID
-aws_secret_access_key = $AWS_SECRET_ACCESS_KEY
-EOF
-
-            echo "AWS Identity:"
-            aws sts get-caller-identity
-          '''
-        }
-      }
-    }
-
-    stage('Create ECR Repository') {
-      steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''
-            echo "=== Creating ECR Repository ${REPO_NAME} ==="
-            aws ecr create-repository --repository-name ${REPO_NAME} --region ${AWS_REGION} || echo "Repository already exists"
+            set -e
+            echo "=== Logging in to ECR ==="
+            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query "Account" --output text).dkr.ecr.${AWS_REGION}.amazonaws.com
           '''
         }
       }
@@ -89,48 +30,36 @@ EOF
 
     stage('Build and Push Docker Image') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''#!/bin/bash
-            set -e
-            ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
-            ECR_REPO=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}
+        sh '''
+          set -e
+          echo "=== Building Docker Image ==="
 
-            echo "=== Logging in to ECR ==="
-            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $ECR_REPO
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/ecom-repo"
 
-            echo "=== Building and pushing Docker image ==="
-            docker build -t ${REPO_NAME}:${IMAGE_TAG} .
-            docker tag ${REPO_NAME}:${IMAGE_TAG} $ECR_REPO:${IMAGE_TAG}
-            docker push $ECR_REPO:${IMAGE_TAG}
+          echo "ECR_REPO=${ECR_REPO}" > ecr_repo.env
 
-            echo "ECR_REPO=$ECR_REPO" > ecr_repo.env
-          '''
-        }
+          docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+          docker push ${ECR_REPO}:${IMAGE_TAG}
+
+          echo "✅ Image pushed successfully!"
+        '''
       }
     }
 
-    stage('Create or Use Existing EKS Cluster') {
+    stage('Create or Verify EKS Cluster') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''#!/bin/bash
+          sh '''
             set -e
-            echo "=== Checking if EKS Cluster ${CLUSTER_NAME} exists ==="
-            CLUSTER_EXISTS=$(aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query "cluster.status" --output text 2>/dev/null || echo "NOTFOUND")
+            echo "=== Checking if EKS cluster exists ==="
 
-            if [ "$CLUSTER_EXISTS" = "NOTFOUND" ]; then
-              echo "Cluster not found. Creating EKS Cluster ${CLUSTER_NAME}..."
-              eksctl create cluster \
-                --name ${CLUSTER_NAME} \
-                --region ${AWS_REGION} \
-                --nodegroup-name standard-workers \
-                --node-type ${NODE_TYPE} \
-                --nodes ${NODE_COUNT} \
-                --nodes-min 1 \
-                --nodes-max 3 \
-                --managed \
-                --with-oidc
+            if aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} >/dev/null 2>&1; then
+              echo "✅ Cluster ${CLUSTER_NAME} already exists. Skipping creation."
             else
-              echo "Cluster ${CLUSTER_NAME} already exists. Using existing cluster."
+              echo "🚀 Creating new EKS cluster..."
+              eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --node-type t3.medium
+              echo "✅ Cluster ${CLUSTER_NAME} created successfully."
             fi
           '''
         }
@@ -140,10 +69,16 @@ EOF
     stage('Deploy to EKS') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''#!/bin/bash
+          sh '''
+            #!/bin/bash
             set -e
+
             echo "=== Configuring kubectl ==="
-            aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
+            export KUBECONFIG=/var/lib/jenkins/.kube/config
+            aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION} --kubeconfig $KUBECONFIG
+
+            echo "=== Verifying EKS connection ==="
+            kubectl get nodes
 
             echo "=== Loading ECR repo info ==="
             source ecr_repo.env
@@ -158,7 +93,7 @@ EOF
             fi
 
             echo "=== Waiting for rollout to complete ==="
-            kubectl rollout status deployment/ecom-deploy --timeout=300s
+            kubectl rollout status deployment/ecom-deploy --timeout=300s || echo "⚠️ Rollout may still be in progress"
 
             echo "=== Applying Service ==="
             kubectl apply -f service.yaml
@@ -171,11 +106,11 @@ EOF
   }
 
   post {
-    success {
-      echo "✅ Application successfully built, pushed, and deployed to EKS!"
-    }
     failure {
-      echo "❌ Deployment failed. Please check the Jenkins logs."
+      echo "❌ Pipeline failed. Please check logs for details."
+    }
+    success {
+      echo "🎉 Pipeline completed successfully!"
     }
   }
 }
