@@ -5,14 +5,46 @@ pipeline {
     AWS_REGION = "ap-south-1"
     CLUSTER_NAME = "jenkins-eks-Cluster"
     IMAGE_TAG = "latest"
+    REPO_NAME = "ecom-repo"
+    ECR_REPO = "503427798981.dkr.ecr.ap-south-1.amazonaws.com/${REPO_NAME}"
+    KUBECONFIG = "/var/lib/jenkins/.kube/config"
   }
 
   stages {
 
-    stage('Checkout Code') {
+    stage('Install Dependencies') {
       steps {
-        echo "=== Checking out source code ==="
-        checkout scm
+        sh '''
+          echo "=== Installing required dependencies ==="
+          if [ -f /etc/debian_version ]; then
+            echo "Detected Debian/Ubuntu system"
+            sudo apt-get update -y
+            sudo apt-get install -y awscli docker.io kubectl
+          elif [ -f /etc/redhat-release ]; then
+            echo "Detected RHEL/CentOS system"
+            sudo yum install -y awscli docker kubectl
+          fi
+          sudo usermod -aG docker jenkins || true
+          sudo systemctl enable docker || true
+          sudo systemctl start docker || true
+        '''
+      }
+    }
+
+    stage('Create EKS Cluster (if not exists)') {
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
+          sh '''
+            echo "=== Checking EKS cluster ==="
+            if aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} >/dev/null 2>&1; then
+              echo "✅ EKS cluster '${CLUSTER_NAME}' already exists. Skipping creation."
+            else
+              echo "🚀 Creating EKS cluster '${CLUSTER_NAME}'..."
+              eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --managed
+              echo "✅ Cluster created successfully!"
+            fi
+          '''
+        }
       }
     }
 
@@ -20,65 +52,50 @@ pipeline {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
           sh '''
-            set -e
             echo "=== Logging in to ECR ==="
-            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query "Account" --output text).dkr.ecr.${AWS_REGION}.amazonaws.com
+            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin 503427798981.dkr.ecr.${AWS_REGION}.amazonaws.com
           '''
         }
       }
     }
 
-    stage('Build and Push Docker Image') {
+    stage('Build and Push Docker Image (if not exists)') {
       steps {
         sh '''
-          set -e
-          echo "=== Building Docker Image ==="
+          echo "=== Checking if image already exists in ECR ==="
+          IMAGE_EXISTS=$(aws ecr describe-images --repository-name ${REPO_NAME} --region ${AWS_REGION} --query "imageDetails[?imageTags[?contains(@, '${IMAGE_TAG}')]]" --output text || true)
 
-          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
-          ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/ecom-repo"
+          if [ -n "$IMAGE_EXISTS" ]; then
+            echo "✅ Image ${ECR_REPO}:${IMAGE_TAG} already exists. Skipping build and push."
+          else
+            echo "=== Building Docker image ==="
+            docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+            echo "=== Pushing image to ECR ==="
+            docker push ${ECR_REPO}:${IMAGE_TAG}
+            echo "✅ Image pushed successfully!"
+          fi
 
           echo "ECR_REPO=${ECR_REPO}" > ecr_repo.env
-
-          docker build -t ${ECR_REPO}:${IMAGE_TAG} .
-          docker push ${ECR_REPO}:${IMAGE_TAG}
-
-          echo "✅ Image pushed successfully!"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> ecr_repo.env
         '''
-      }
-    }
-
-    stage('Create or Verify EKS Cluster') {
-      steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''
-            set -e
-            echo "=== Checking if EKS cluster exists ==="
-
-            if aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} >/dev/null 2>&1; then
-              echo "✅ Cluster ${CLUSTER_NAME} already exists. Skipping creation."
-            else
-              echo "🚀 Creating new EKS cluster..."
-              eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --node-type t3.medium
-              echo "✅ Cluster ${CLUSTER_NAME} created successfully."
-            fi
-          '''
-        }
       }
     }
 
     stage('Deploy to EKS') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: '5eb734ee-37a7-487b-a46c-9008ebcf9157']]) {
-          sh '''
-            #!/bin/bash
+          sh '''#!/bin/bash
             set -e
-
             echo "=== Configuring kubectl ==="
-            export KUBECONFIG=/var/lib/jenkins/.kube/config
+            export KUBECONFIG=${KUBECONFIG}
             aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION} --kubeconfig $KUBECONFIG
 
-            echo "=== Verifying EKS connection ==="
-            kubectl get nodes
+            echo "=== Verifying EKS Connection ==="
+            if ! kubectl get nodes >/dev/null 2>&1; then
+              echo "❌ Unable to connect to EKS cluster. Exiting."
+              exit 1
+            fi
+            echo "✅ EKS cluster connection verified."
 
             echo "=== Loading ECR repo info ==="
             source ecr_repo.env
@@ -93,7 +110,7 @@ pipeline {
             fi
 
             echo "=== Waiting for rollout to complete ==="
-            kubectl rollout status deployment/ecom-deploy --timeout=300s || echo "⚠️ Rollout may still be in progress"
+            kubectl rollout status deployment/ecom-deploy --timeout=300s || echo "⚠️ Rollout may not be complete yet"
 
             echo "=== Applying Service ==="
             kubectl apply -f service.yaml
@@ -107,10 +124,10 @@ pipeline {
 
   post {
     failure {
-      echo "❌ Pipeline failed. Please check logs for details."
+      echo "❌ Pipeline failed. Check logs above for errors."
     }
     success {
-      echo "🎉 Pipeline completed successfully!"
+      echo "🎉 Pipeline executed successfully!"
     }
   }
 }
